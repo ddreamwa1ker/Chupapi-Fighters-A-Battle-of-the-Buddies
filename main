@@ -1,0 +1,891 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chupapi Fighters</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #000;
+  overflow: hidden;
+  font-family: 'Courier New', monospace;
+  color: #fff;
+  user-select: none;
+}
+#gameCanvas {
+  display: block;
+  width: 100vw;
+  height: 100vh;
+}
+.vhs-overlay {
+  position: fixed;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  pointer-events: none;
+  z-index: 100;
+}
+.scanlines {
+  position: fixed;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  background: repeating-linear-gradient(
+    0deg,
+    rgba(0,0,0,0.15) 0px,
+    rgba(0,0,0,0.15) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+  pointer-events: none;
+  z-index: 101;
+}
+.vhs-rec {
+  position: fixed;
+  top: 20px; left: 20px;
+  color: #ff3333;
+  font-size: 18px;
+  font-weight: bold;
+  z-index: 102;
+  animation: blink 1s infinite;
+  text-shadow: 0 0 10px #ff0000;
+}
+.vhs-timecode {
+  position: fixed;
+  top: 20px; right: 20px;
+  color: #aaa;
+  font-size: 16px;
+  z-index: 102;
+  font-family: 'Courier New', monospace;
+}
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+</style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+<div class="scanlines"></div>
+<div class="vhs-rec" id="vhsRec">REC ▶00:00:00</div>
+<div class="vhs-timecode" id="vhsTime">01:09:26</div>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+// Game constants
+const ARENA_WIDTH = 1600;
+const ARENA_HEIGHT = 500;
+const GROUND_Y = 400;
+
+// Resize canvas
+function resize() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// Audio context
+let audioCtx = null;
+function initAudio() {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+}
+
+function playSound(type) {
+  if (!audioCtx) return;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  
+  switch(type) {
+    case 'step':
+      osc.frequency.value = 80 + Math.random() * 40;
+      osc.type = 'square';
+      gain.gain.setValueAtTime(0.05, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.05);
+      osc.start(); osc.stop(audioCtx.currentTime + 0.05);
+      break;
+    case 'hit':
+      osc.frequency.value = 200;
+      osc.type = 'sawtooth';
+      gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.15);
+      osc.start(); osc.stop(audioCtx.currentTime + 0.15);
+      break;
+    case 'kick':
+      osc.frequency.value = 100;
+      osc.type = 'sawtooth';
+      gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.2);
+      osc.start(); osc.stop(audioCtx.currentTime + 0.2);
+      break;
+    case 'select':
+      osc.frequency.value = 440;
+      osc.type = 'sine';
+      gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.1);
+      osc.start(); osc.stop(audioCtx.currentTime + 0.1);
+      break;
+    case 'locked':
+      osc.frequency.value = 150;
+      osc.type = 'square';
+      gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.2);
+      osc.start(); osc.stop(audioCtx.currentTime + 0.2);
+      break;
+    case 'ko':
+      osc.frequency.value = 80;
+      osc.type = 'sawtooth';
+      gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.5);
+      osc.start(); osc.stop(audioCtx.currentTime + 0.5);
+      break;
+  }
+}
+
+// Images
+const images = {};
+const imageUrls = {
+  kuleshov: 'https://image.qwenlm.ai/public_source/1632e8a2-b10c-4fa6-9cfc-bcd1103645cf/109f729ca-81cd-465a-a87a-8fd8a9666084.png',
+  boman: 'https://image.qwenlm.ai/public_source/1632e8a2-b10c-4fa6-9cfc-bcd1103645cf/156d2c651-8889-40f3-834e-df27948eb6d4.png',
+  tobesh: 'https://image.qwenlm.ai/public_source/1632e8a2-b10c-4fa6-9cfc-bcd1103645cf/152de902f-d9a9-4e7e-8a27-354544b8a6e7.png',
+  arena1: 'https://image.qwenlm.ai/public_source/1632e8a2-b10c-4fa6-9cfc-bcd1103645cf/1c94a6ad0-e045-4529-a081-214267e70b1e.png',
+  arena2: 'https://image.qwenlm.ai/public_source/1632e8a2-b10c-4fa6-9cfc-bcd1103645cf/192f4d131-2b63-449a-8658-4b69077b7525.png'
+};
+
+let imagesLoaded = 0;
+let totalImages = Object.keys(imageUrls).length;
+
+function loadImages() {
+  for (let key in imageUrls) {
+    const img = new Image();
+    img.onload = () => {
+      imagesLoaded++;
+      images[key] = img;
+    };
+    img.onerror = () => {
+      imagesLoaded++;
+      images[key] = null;
+    };
+    img.src = imageUrls[key];
+  }
+}
+loadImages();
+
+// Game state
+let gameState = 'menu'; // menu, modeSelect, charSelect, fight, stats
+let selectedMode = null;
+let player1Char = null;
+let player2Char = null;
+let currentSelection = 0; // 0 = player1, 1 = player2
+let arcadeStage = 0;
+let stats = { matches: 0, kuleshovWins: 0, bomanWins: 0, tobeshWins: 0, draws: 0 };
+
+// Characters data
+const characters = [
+  { name: 'KULESHOV', color: '#4488ff', speed: 4, power: 10, kickPower: 15, size: 1, hp: 100 },
+  { name: 'BOMAN', color: '#ff4444', speed: 3.5, power: 12, kickPower: 18, size: 1.1, hp: 120 },
+  { name: 'TOBESH', color: '#44ff44', speed: 5.2, power: 8, kickPower: 12, size: 0.85, hp: 80 },
+  { name: '???', color: '#666', speed: 0, power: 0, kickPower: 0, size: 1, hp: 0, locked: true },
+  { name: '???', color: '#666', speed: 0, power: 0, kickPower: 0, size: 1, hp: 0, locked: true }
+];
+
+const arenas = [
+  { name: 'ДВОР', img: 'arena1' },
+  { name: 'ПЕРВАЯ ПЕННАЯ', img: 'arena2' },
+  { name: 'ПАРКОВКА', img: null },
+  { name: 'ПОДЪЕЗД', img: null }
+];
+
+// Fighters
+let fighter1 = null;
+let fighter2 = null;
+let cameraX = 0;
+let cameraZoom = 1;
+let fightResult = null;
+let fightTimer = 0;
+let roundOver = false;
+
+// Input
+const keys = {};
+window.addEventListener('keydown', (e) => {
+  keys[e.key.toLowerCase()] = true;
+  keys[e.code] = true;
+  
+  if (gameState === 'menu') {
+    if (e.key === 'Enter' || e.key === ' ') {
+      initAudio();
+      playSound('select');
+      gameState = 'modeSelect';
+    }
+    if (e.key.toLowerCase() === 's') {
+      initAudio();
+      playSound('select');
+      gameState = 'stats';
+    }
+  } else if (gameState === 'modeSelect') {
+    if (e.key === 'Escape') { gameState = 'menu'; playSound('select'); }
+    if (e.key === '1' || e.key.toLowerCase() === 'a') {
+      selectedMode = 'arcade';
+      gameState = 'charSelect';
+      currentSelection = 0;
+      playSound('select');
+    }
+    if (e.key === '2' || e.key.toLowerCase() === 'f') {
+      selectedMode = 'free';
+      gameState = 'charSelect';
+      currentSelection = 0;
+      playSound('select');
+    }
+  } else if (gameState === 'charSelect') {
+    if (e.key === 'Escape') { gameState = 'modeSelect'; playSound('select'); }
+    if (e.key === 'ArrowLeft') {
+      currentSelection = Math.max(0, currentSelection - 1);
+      playSound('select');
+    }
+    if (e.key === 'ArrowRight') {
+      currentSelection = Math.min(1, currentSelection);
+      playSound('select');
+    }
+    if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      const sel = currentSelection === 0 ? player1Char : player2Char;
+      let idx = sel !== null ? characters.indexOf(characters.find(c => c.name === sel)) : 0;
+      if (e.key === 'ArrowDown') idx = (idx + 1) % characters.length;
+      else idx = (idx - 1 + characters.length) % characters.length;
+      
+      if (characters[idx].locked) {
+        playSound('locked');
+      } else {
+        if (currentSelection === 0) player1Char = characters[idx].name;
+        else player2Char = characters[idx].name;
+        playSound('select');
+      }
+    }
+    if (e.key === 'Enter' || e.key === ' ') {
+      if (player1Char && (selectedMode === 'arcade' || player2Char)) {
+        if (selectedMode === 'arcade') {
+          player2Char = null;
+          arcadeStage = 0;
+        }
+        startFight();
+        playSound('select');
+      } else {
+        playSound('locked');
+      }
+    }
+  } else if (gameState === 'stats') {
+    if (e.key === 'Escape' || e.key === 'Enter') { gameState = 'menu'; playSound('select'); }
+  } else if (gameState === 'fight') {
+    if (roundOver && (e.key === 'Enter' || e.key === ' ')) {
+      if (selectedMode === 'arcade' && fighter1.hp > 0) {
+        arcadeStage++;
+        if (arcadeStage >= 3) {
+          gameState = 'menu';
+          stats.matches++;
+          if (player1Char === 'KULESHOV') stats.kuleshovWins++;
+          else if (player1Char === 'BOMAN') stats.bomanWins++;
+          else if (player1Char === 'TOBESH') stats.tobeshWins++;
+        } else {
+          startFight();
+        }
+      } else {
+        gameState = 'menu';
+        stats.matches++;
+        if (fighter1.hp > fighter2.hp) {
+          if (player1Char === 'KULESHOV') stats.kuleshovWins++;
+          else if (player1Char === 'BOMAN') stats.bomanWins++;
+          else if (player1Char === 'TOBESH') stats.tobeshWins++;
+        } else if (fighter2.hp > fighter1.hp) {
+          if (player2Char === 'KULESHOV') stats.kuleshovWins++;
+          else if (player2Char === 'BOMAN') stats.bomanWins++;
+          else if (player2Char === 'TOBESH') stats.tobeshWins++;
+        } else {
+          stats.draws++;
+        }
+      }
+      playSound('select');
+    }
+  }
+});
+
+window.addEventListener('keyup', (e) => {
+  keys[e.key.toLowerCase()] = false;
+  keys[e.code] = false;
+});
+
+function getCharData(name) {
+  return characters.find(c => c.name === name) || characters[0];
+}
+
+function startFight() {
+  const arena = arenas[Math.floor(Math.random() * arenas.length)];
+  const p1Data = getCharData(player1Char);
+  const p2Data = getCharData(player2Char || characters[Math.floor(Math.random() * 3)].name);
+  
+  if (selectedMode === 'arcade') {
+    const opponents = ['KULESHOV', 'BOMAN', 'TOBESH'].filter(n => n !== player1Char);
+    player2Char = opponents[arcadeStage % opponents.length];
+    const oppData = getCharData(player2Char);
+    oppData.speed *= (1 + arcadeStage * 0.2);
+    oppData.power *= (1 + arcadeStage * 0.15);
+  }
+  
+  fighter1 = {
+    name: player1Char,
+    x: 400,
+    y: GROUND_Y,
+    vx: 0,
+    vy: 0,
+    hp: p1Data.hp,
+    maxHp: p1Data.hp,
+    facing: 1,
+    state: 'idle',
+    stateTimer: 0,
+    data: p1Data,
+    grounded: true,
+    blocking: false,
+    attacking: false,
+    attackTimer: 0,
+    hitCooldown: 0,
+    animFrame: 0,
+    animTimer: 0
+  };
+  
+  fighter2 = {
+    name: player2Char,
+    x: 1200,
+    y: GROUND_Y,
+    vx: 0,
+    vy: 0,
+    hp: p2Data.hp,
+    maxHp: p2Data.hp,
+    facing: -1,
+    state: 'idle',
+    stateTimer: 0,
+    data: p2Data,
+    grounded: true,
+    blocking: false,
+    attacking: false,
+    attackTimer: 0,
+    hitCooldown: 0,
+    animFrame: 0,
+    animTimer: 0,
+    isBot: true
+  };
+  
+  cameraX = 0;
+  cameraZoom = 1;
+  roundOver = false;
+  fightResult = null;
+  fightTimer = 0;
+  gameState = 'fight';
+}
+
+function updateFighter(f, opponent, isPlayer) {
+  if (roundOver) return;
+  
+  const data = f.data;
+  f.animTimer++;
+  if (f.animTimer > 10) { f.animFrame = (f.animFrame + 1) % 4; f.animTimer = 0; }
+  
+  if (f.hitCooldown > 0) f.hitCooldown--;
+  if (f.attackTimer > 0) {
+    f.attackTimer--;
+    if (f.attackTimer === 0) f.attacking = false;
+  }
+  
+  // Gravity
+  if (!f.grounded) {
+    f.vy += 0.6;
+    f.y += f.vy;
+    if (f.y >= GROUND_Y) {
+      f.y = GROUND_Y;
+      f.vy = 0;
+      f.grounded = true;
+    }
+  }
+  
+  if (isPlayer) {
+    // Player controls
+    f.blocking = keys['s'];
+    
+    if (!f.attacking && !f.blocking) {
+      if (keys['a']) { f.vx = -data.speed; f.facing = -1; }
+      else if (keys['d']) { f.vx = data.speed; f.facing = 1; }
+      else { f.vx *= 0.8; }
+      
+      if (keys['w'] && f.grounded) { f.vy = -12; f.grounded = false; }
+      if (keys['f'] && !f.attacking) { f.attacking = true; f.attackTimer = 15; f.state = 'punch'; playSound('hit'); }
+      if (keys['g'] && !f.attacking) { f.attacking = true; f.attackTimer = 20; f.state = 'kick'; playSound('kick'); }
+    }
+    
+    if (f.blocking) f.vx *= 0.5;
+  } else {
+    // Bot AI
+    const dist = opponent.x - f.x;
+    const absDist = Math.abs(dist);
+    const aggression = 0.6 + (selectedMode === 'arcade' ? arcadeStage * 0.15 : 0);
+    
+    f.facing = dist > 0 ? 1 : -1;
+    
+    if (!f.attacking) {
+      if (absDist > 120) {
+        f.vx = f.facing * data.speed * aggression;
+      } else if (absDist < 60) {
+        f.vx = -f.facing * data.speed * 0.5;
+      } else {
+        f.vx *= 0.8;
+        if (Math.random() < 0.03 * aggression) {
+          f.attacking = true;
+          f.attackTimer = Math.random() > 0.4 ? 15 : 20;
+          f.state = Math.random() > 0.4 ? 'punch' : 'kick';
+          playSound(f.state === 'punch' ? 'hit' : 'kick');
+        }
+      }
+      
+      if (Math.random() < 0.01 && f.grounded) {
+        f.vy = -10 - Math.random() * 4;
+        f.grounded = false;
+      }
+      
+      if (opponent.attacking && absDist < 150 && Math.random() < 0.3) {
+        f.blocking = true;
+      } else {
+        f.blocking = false;
+      }
+    }
+  }
+  
+  f.x += f.vx;
+  f.x = Math.max(50, Math.min(ARENA_WIDTH - 50, f.x));
+}
+
+function checkHit(attacker, defender) {
+  if (!attacker.attacking || attacker.attackTimer < 5 || attacker.attackTimer > 12) return;
+  if (defender.hitCooldown > 0) return;
+  
+  const dist = Math.abs(attacker.x - defender.x);
+  const range = attacker.state === 'kick' ? 100 : 70;
+  
+  if (dist < range && attacker.facing * (defender.x - attacker.x) > 0) {
+    let damage = attacker.state === 'kick' ? attacker.data.kickPower : attacker.data.power;
+    if (attacker.data.name === 'TOBESH') damage *= 0.8;
+    
+    if (defender.blocking) {
+      damage *= 0.2;
+      defender.vx = attacker.facing * 3;
+    } else {
+      defender.vx = attacker.facing * 8;
+      defender.vy = -3;
+      defender.grounded = false;
+      defender.hitCooldown = 20;
+      playSound('hit');
+    }
+    
+    defender.hp -= damage;
+    if (defender.hp < 0) defender.hp = 0;
+  }
+}
+
+function updateFight() {
+  fightTimer++;
+  
+  updateFighter(fighter1, fighter2, true);
+  updateFighter(fighter2, fighter1, false);
+  
+  checkHit(fighter1, fighter2);
+  checkHit(fighter2, fighter1);
+  
+  // Camera
+  const midX = (fighter1.x + fighter2.x) / 2;
+  const dist = Math.abs(fighter1.x - fighter2.x);
+  cameraX += (midX - canvas.width / 2 - cameraX) * 0.05;
+  cameraZoom = Math.max(0.7, Math.min(1.2, 1 - (dist - 400) * 0.0005));
+  cameraX = Math.max(0, Math.min(ARENA_WIDTH - canvas.width / cameraZoom, cameraX));
+  
+  // Check round end
+  if (!roundOver) {
+    if (fighter1.hp <= 0 || fighter2.hp <= 0) {
+      roundOver = true;
+      fightResult = fighter1.hp > fighter2.hp ? 'p1' : fighter2.hp > fighter1.hp ? 'p2' : 'draw';
+      playSound('ko');
+    }
+  }
+}
+
+// Drawing functions
+function drawVHSBackground() {
+  // Dark blue gradient
+  const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+  grad.addColorStop(0, '#0a0a2e');
+  grad.addColorStop(1, '#000011');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  
+  // Random glitch bars
+  if (Math.random() < 0.05) {
+    ctx.fillStyle = `rgba(100, 150, 255, ${Math.random() * 0.1})`;
+    const y = Math.random() * canvas.height;
+    ctx.fillRect(0, y, canvas.width, 2 + Math.random() * 5);
+  }
+}
+
+function drawChromaticText(text, x, y, size, color) {
+  ctx.font = `bold ${size}px 'Courier New', monospace`;
+  ctx.textAlign = 'center';
+  
+  // Red offset
+  ctx.fillStyle = 'rgba(255, 0, 0, 0.5)';
+  ctx.fillText(text, x - 2, y);
+  // Blue offset
+  ctx.fillStyle = 'rgba(0, 100, 255, 0.5)';
+  ctx.fillText(text, x + 2, y);
+  // Main
+  ctx.fillStyle = color || '#fff';
+  ctx.fillText(text, x, y);
+}
+
+function drawButton(text, x, y, w, h, selected) {
+  ctx.fillStyle = selected ? 'rgba(50, 100, 200, 0.6)' : 'rgba(20, 40, 80, 0.6)';
+  ctx.strokeStyle = selected ? '#4488ff' : '#2244aa';
+  ctx.lineWidth = 2;
+  ctx.fillRect(x, y, w, h);
+  ctx.strokeRect(x, y, w, h);
+  
+  ctx.font = 'bold 20px Courier New';
+  ctx.fillStyle = selected ? '#fff' : '#88aaff';
+  ctx.textAlign = 'center';
+  ctx.fillText(text, x + w/2, y + h/2 + 7);
+}
+
+function drawMenu() {
+  drawVHSBackground();
+  
+  const cx = canvas.width / 2;
+  const cy = canvas.height / 2;
+  
+  // Title
+  drawChromaticText('CHUPAPI FIGHTERS', cx, cy - 120, 56, '#4488ff');
+  
+  // Subtitle
+  ctx.font = '18px Courier New';
+  ctx.fillStyle = '#6688cc';
+  ctx.textAlign = 'center';
+  ctx.fillText('A BATTLE OF THE BUDDIES', cx, cy - 70);
+  
+  // Buttons
+  drawButton('ИГРАТЬ', cx - 150, cy - 20, 300, 50, true);
+  drawButton('СТАТИСТИКА', cx - 150, cy + 50, 300, 50, false);
+  
+  // Footer
+  ctx.font = '14px Courier New';
+  ctx.fillStyle = '#445588';
+  ctx.fillText('ENTER — выбрать  ·  S — статистика', cx, cy + 140);
+  
+  // Loading indicator
+  if (imagesLoaded < totalImages) {
+    ctx.font = '16px Courier New';
+    ctx.fillStyle = '#ffaa00';
+    ctx.fillText(`загрузка спрайтов… ${imagesLoaded}/${totalImages}`, cx, cy + 180);
+  }
+}
+
+function drawModeSelect() {
+  drawVHSBackground();
+  
+  const cx = canvas.width / 2;
+  const cy = canvas.height / 2;
+  
+  drawChromaticText('ВЫБЕРИТЕ РЕЖИМ', cx, cy - 150, 40, '#4488ff');
+  
+  drawButton('АРКАДА', cx - 350, cy - 50, 300, 80, false);
+  drawButton('СВОБОДНЫЙ БОЙ', cx + 50, cy - 50, 300, 80, false);
+  
+  ctx.font = '16px Courier New';
+  ctx.fillStyle = '#88aaff';
+  ctx.textAlign = 'center';
+  ctx.fillText('1/А — Аркада  ·  2/F — Свободный бой  ·  ESC — назад', cx, cy + 120);
+  
+  ctx.font = '14px Courier New';
+  ctx.fillStyle = '#667799';
+  ctx.fillText('АРКАДА: Выбери одного бойца и пройди всех соперников подряд', cx - 200, cy + 20);
+  ctx.fillText('СВОБОДНЫЙ БОЙ: Выбери обоих бойцов сам', cx + 200, cy + 20);
+}
+
+function drawCharSelect() {
+  drawVHSBackground();
+  
+  const cx = canvas.width / 2;
+  const cy = canvas.height / 2;
+  
+  drawChromaticText('ВЫБОР БОЙЦА', cx, cy - 200, 36, '#4488ff');
+  
+  // Player 1 selection
+  ctx.font = '18px Courier New';
+  ctx.fillStyle = currentSelection === 0 ? '#44ff44' : '#88aaff';
+  ctx.textAlign = 'center';
+  ctx.fillText('ИГРОК 1', cx - 200, cy - 140);
+  
+  // Player 2 selection
+  ctx.fillStyle = currentSelection === 1 ? '#ff4444' : '#88aaff';
+  ctx.fillText(selectedMode === 'arcade' ? 'БОТ' : 'ИГРОК 2', cx + 200, cy - 140);
+  
+  // Character slots
+  const slotW = 120;
+  const slotH = 160;
+  const startX = cx - 300;
+  const startY = cy - 100;
+  
+  for (let i = 0; i < characters.length; i++) {
+    const c = characters[i];
+    const sx = startX + i * 130;
+    const sy = startY;
+    const isSelected1 = player1Char === c.name;
+    const isSelected2 = player2Char === c.name;
+    
+    ctx.fillStyle = c.locked ? 'rgba(30,30,30,0.6)' : 'rgba(20,40,80,0.6)';
+    ctx.strokeStyle = isSelected1 ? '#44ff44' : isSelected2 ? '#ff4444' : c.locked ? '#333' : '#4488ff';
+    ctx.lineWidth = isSelected1 || isSelected2 ? 3 : 2;
+    ctx.fillRect(sx, sy, slotW, slotH);
+    ctx.strokeRect(sx, sy, slotW, slotH);
+    
+    if (!c.locked) {
+      // Draw character preview
+      const img = images[c.name.toLowerCase()];
+      if (img) {
+        ctx.drawImage(img, sx + 10, sy + 10, slotW - 20, slotH - 50);
+      } else {
+        ctx.fillStyle = c.color;
+        ctx.fillRect(sx + 30, sy + 20, 60, 80);
+      }
+    } else {
+      ctx.font = '30px Courier New';
+      ctx.fillStyle = '#555';
+      ctx.textAlign = 'center';
+      ctx.fillText('?', sx + slotW/2, sy + slotH/2 + 10);
+    }
+    
+    ctx.font = '12px Courier New';
+    ctx.fillStyle = c.locked ? '#555' : '#aaccff';
+    ctx.textAlign = 'center';
+    ctx.fillText(c.name, sx + slotW/2, sy + slotH - 10);
+  }
+  
+  // Instructions
+  ctx.font = '14px Courier New';
+  ctx.fillStyle = '#667799';
+  ctx.textAlign = 'center';
+  ctx.fillText('← → — выбор игрока  ·  ↑ ↓ — выбор персонажа  ·  ENTER — начать  ·  ESC — назад', cx, cy + 120);
+  
+  if (selectedMode === 'arcade') {
+    ctx.fillStyle = '#ffaa00';
+    ctx.fillText(`АРКАДА — Этап ${arcadeStage + 1}/3`, cx, cy + 150);
+  }
+}
+
+function drawArena() {
+  const arena = arenas[Math.floor(Math.random() * 1000) % arenas.length];
+  // Use a fixed arena for the fight
+  const arenaIdx = (fighter1 ? fighter1.x : 0) % arenas.length;
+  const currentArena = arenas[Math.abs(Math.floor((fighter1?.x || 0) / 100)) % arenas.length] || arenas[0];
+  
+  // Draw background
+  const img = images[currentArena.img];
+  if (img) {
+    const drawW = ARENA_WIDTH * cameraZoom;
+    const drawH = canvas.height;
+    ctx.drawImage(img, -cameraX * cameraZoom, 0, drawW, drawH);
+  } else {
+    // Fallback background
+    const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+    grad.addColorStop(0, '#1a1a3e');
+    grad.addColorStop(0.6, '#2a2a4e');
+    grad.addColorStop(1, '#0a0a1e');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
+  
+  // Ground
+  ctx.fillStyle = '#333';
+  ctx.fillRect(0, GROUND_Y * cameraZoom + 50, canvas.width, canvas.height);
+  
+  // Arena name
+  ctx.font = '16px Courier New';
+  ctx.fillStyle = 'rgba(255,255,255,0.5)';
+  ctx.textAlign = 'left';
+  ctx.fillText(currentArena.name, 20, 40);
+}
+
+function drawFighter(f) {
+  const screenX = (f.x - cameraX) * cameraZoom + canvas.width / 2 * (1 - cameraZoom);
+  const screenY = f.y * cameraZoom;
+  const size = 80 * f.data.size * cameraZoom;
+  
+  ctx.save();
+  ctx.translate(screenX, screenY);
+  if (f.facing < 0) ctx.scale(-1, 1);
+  
+  // Draw character image or fallback
+  const img = images[f.name.toLowerCase()];
+  if (img) {
+    ctx.drawImage(img, -size/2, -size * 1.5, size, size * 1.5);
+  } else {
+    // Fallback: colored rectangle
+    ctx.fillStyle = f.data.color;
+    ctx.fillRect(-size/3, -size, size * 0.66, size);
+    // Head
+    ctx.fillStyle = '#ffcc99';
+    ctx.beginPath();
+    ctx.arc(0, -size - 15, size * 0.25, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  
+  // Attack effect
+  if (f.attacking) {
+    ctx.strokeStyle = '#ffff00';
+    ctx.lineWidth = 3;
+    const range = f.state === 'kick' ? 60 : 40;
+    ctx.beginPath();
+    ctx.arc(size * 0.3, -size * 0.5, range * cameraZoom, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  
+  // Block effect
+  if (f.blocking) {
+    ctx.strokeStyle = '#00ffff';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(0, -size * 0.5, size * 0.6, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  
+  ctx.restore();
+  
+  // HP bar
+  const barW = 100 * cameraZoom;
+  const barH = 12;
+  const barX = screenX - barW / 2;
+  const barY = screenY - size * 1.7;
+  
+  ctx.fillStyle = '#333';
+  ctx.fillRect(barX, barY, barW, barH);
+  ctx.fillStyle = f.hp > f.maxHp * 0.3 ? '#44ff44' : '#ff4444';
+  ctx.fillRect(barX, barY, barW * (f.hp / f.maxHp), barH);
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(barX, barY, barW, barH);
+  
+  // Name
+  ctx.font = '12px Courier New';
+  ctx.fillStyle = '#fff';
+  ctx.textAlign = 'center';
+  ctx.fillText(f.name, screenX, barY - 5);
+}
+
+function drawFight() {
+  drawArena();
+  drawFighter(fighter1);
+  drawFighter(fighter2);
+  
+  // Round over message
+  if (roundOver) {
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    
+    const cx = canvas.width / 2;
+    const cy = canvas.height / 2;
+    
+    let msg = '';
+    if (fightResult === 'p1') msg = `${fighter1.name} ПОБЕЖДАЕТ!`;
+    else if (fightResult === 'p2') msg = `${fighter2.name} ПОБЕЖДАЕТ!`;
+    else msg = 'НИЧЬЯ!';
+    
+    drawChromaticText(msg, cx, cy - 30, 40, '#ff4444');
+    
+    ctx.font = '18px Courier New';
+    ctx.fillStyle = '#aaccff';
+    ctx.textAlign = 'center';
+    ctx.fillText('ENTER — продолжить', cx, cy + 40);
+  }
+  
+  // HUD
+  ctx.font = '14px Courier New';
+  ctx.fillStyle = '#88aaff';
+  ctx.textAlign = 'left';
+  ctx.fillText(`P1: ${fighter1.name}  HP: ${Math.ceil(fighter1.hp)}/${fighter1.maxHp}`, 20, 30);
+  ctx.textAlign = 'right';
+  ctx.fillText(`P2: ${fighter2.name}  HP: ${Math.ceil(fighter2.hp)}/${fighter2.maxHp}`, canvas.width - 20, 30);
+  
+  if (selectedMode === 'arcade') {
+    ctx.textAlign = 'center';
+    ctx.fillText(`ЭТАП ${arcadeStage + 1}/3`, canvas.width / 2, 30);
+  }
+  
+  // Controls hint
+  ctx.font = '11px Courier New';
+  ctx.fillStyle = '#556688';
+  ctx.textAlign = 'center';
+  ctx.fillText('A/D — идти · W — прыжок · S — блок · F — удар · G — нога', canvas.width / 2, canvas.height - 20);
+}
+
+function drawStats() {
+  drawVHSBackground();
+  
+  const cx = canvas.width / 2;
+  const cy = canvas.height / 2;
+  
+  drawChromaticText('СТАТИСТИКА', cx, cy - 150, 40, '#4488ff');
+  
+  ctx.font = '20px Courier New';
+  ctx.fillStyle = '#aaccff';
+  ctx.textAlign = 'center';
+  ctx.fillText(`МАТЧЕЙ СЫГРАНО: ${stats.matches}`, cx, cy - 60);
+  ctx.fillText(`KULESHOV ПОБЕД: ${stats.kuleshovWins}`, cx, cy - 20);
+  ctx.fillText(`BOMAN ПОБЕД: ${stats.bomanWins}`, cx, cy + 20);
+  ctx.fillText(`TOBESH ПОБЕД: ${stats.tobeshWins}`, cx, cy + 60);
+  ctx.fillText(`НИЧЬИХ: ${stats.draws}`, cx, cy + 100);
+  
+  ctx.font = '16px Courier New';
+  ctx.fillStyle = '#667799';
+  ctx.fillText('ESC / ENTER — назад', cx, cy + 160);
+}
+
+// Main loop
+let lastTime = 0;
+let stepTimer = 0;
+
+function gameLoop(timestamp) {
+  const dt = timestamp - lastTime;
+  lastTime = timestamp;
+  
+  // Update timecode
+  const seconds = Math.floor(timestamp / 1000);
+  const h = String(Math.floor(seconds / 3600)).padStart(2, '0');
+  const m = String(Math.floor((seconds % 3600) / 60)).padStart(2, '0');
+  const s = String(seconds % 60).padStart(2, '0');
+  document.getElementById('vhsTime').textContent = `${h}:${m}:${s}`;
+  
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  
+  switch(gameState) {
+    case 'menu': drawMenu(); break;
+    case 'modeSelect': drawModeSelect(); break;
+    case 'charSelect': drawCharSelect(); break;
+    case 'fight':
+      updateFight();
+      drawFight();
+      break;
+    case 'stats': drawStats(); break;
+  }
+  
+  requestAnimationFrame(gameLoop);
+}
+
+requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>
